@@ -72,6 +72,30 @@ void duel::clear() {
 #ifdef __GNUC__
 #pragma GCC diagnostic pop
 #endif
+void duel::reset_for_reuse(const OCG_DuelOptions& opts) {
+	assumes.clear();
+	uncopy.clear();
+	for(auto& pcard : cards)
+		delete pcard;
+	for(auto& peffect : effects) {
+		lua->unregister_effect(peffect);
+		delete peffect;
+	}
+	delete game_field;
+	lua->collect(false);
+	cards.clear();
+	for(auto& pgroup : groups) {
+		pgroup->container.clear();
+		pgroup->is_iterator_dirty = true;
+	}
+	effects.clear();
+	game_field = new field(this, opts);
+	game_field->temp_card = new_card(0);
+	buff.clear();
+	query_buffer.clear();
+	clear_pending_messages();
+	random = RNG::Xoshiro256StarStar({opts.seed[0], opts.seed[1], opts.seed[2], opts.seed[3]});
+}
 card* duel::new_card(uint32_t code) {
 	card* pcard = new card(this);
 	cards.insert(pcard);

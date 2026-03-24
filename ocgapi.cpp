@@ -247,6 +247,36 @@ void* OCG_DuelQueryLocation(OCG_Duel ocg_duel, uint32_t* length, const OCG_Query
 	return buffer.data();
 }
 
+void OCG_DuelReset(OCG_Duel ocg_duel, const OCG_DuelOptions* options_ptr) {
+	auto* pduel = static_cast<duel*>(ocg_duel);
+	pduel->reset_for_reuse(*options_ptr);
+}
+
+int OCG_DuelBatchReplay(OCG_Duel ocg_duel, const void* const* responses,
+                         const uint32_t* response_lengths, uint32_t response_count) {
+	auto* pduel = static_cast<duel*>(ocg_duel);
+	uint32_t resp_idx = 0;
+	while(true) {
+		auto flag = pduel->game_field->process();
+		if(flag == OCG_DUEL_STATUS_END) {
+			pduel->generate_buffer();
+			return OCG_DUEL_STATUS_END;
+		}
+		if(flag == OCG_DUEL_STATUS_AWAITING) {
+			if(resp_idx < response_count) {
+				pduel->clear_pending_messages();
+				pduel->set_response(responses[resp_idx], response_lengths[resp_idx]);
+				resp_idx++;
+			} else {
+				pduel->generate_buffer();
+				return flag;
+			}
+		} else {
+			pduel->clear_pending_messages();
+		}
+	}
+}
+
 void* OCG_DuelQueryField(OCG_Duel ocg_duel, uint32_t* length) {
 	auto* pduel = static_cast<duel*>(ocg_duel);
 	auto& query = pduel->query_buffer;

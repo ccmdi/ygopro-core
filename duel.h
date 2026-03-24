@@ -102,6 +102,8 @@ public:
 	void set_response(const void* resp, size_t len);
 	int32_t get_next_integer(int32_t l, int32_t h);
 	duel_message* new_message(uint8_t message);
+	void clear_pending_messages() { messages.clear(); }
+	void reset_for_reuse(const OCG_DuelOptions& opts);
 	const card_data& read_card(uint32_t code);
 	inline void handle_message(const char* message, OCG_LogTypes type) {
 		handle_message_callback(handle_message_payload, message, type);

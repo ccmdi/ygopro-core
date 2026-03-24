@@ -44,6 +44,11 @@ OCGAPI void* OCG_DuelQuery(OCG_Duel ocg_duel, uint32_t* length, const OCG_QueryI
 OCGAPI void* OCG_DuelQueryLocation(OCG_Duel ocg_duel, uint32_t* length, const OCG_QueryInfo* info_ptr);
 OCGAPI void* OCG_DuelQueryField(OCG_Duel ocg_duel, uint32_t* length);
 
+/*** FAST STATE RESTORE ***/
+OCGAPI void OCG_DuelReset(OCG_Duel ocg_duel, const OCG_DuelOptions* options_ptr);
+OCGAPI int OCG_DuelBatchReplay(OCG_Duel ocg_duel, const void* const* responses,
+                                const uint32_t* response_lengths, uint32_t response_count);
+
 #undef OCGAPI
 #undef EXTERN_C
 
