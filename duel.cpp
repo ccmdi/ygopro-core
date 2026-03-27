@@ -553,8 +553,10 @@ int duel::deserialize(const void* buffer, uint32_t size) {
 	// Field
 	deserialize_field(buf, game_field, maps, this);
 
-	// Resume GC now that state is consistent.
+	// Resume GC and collect orphaned group userdata immediately so they
+	// don't accumulate across repeated save/restore cycles (MCTS).
 	lua_gc(lua->lua_state, LUA_GCRESTART, 0);
+	lua_gc(lua->lua_state, LUA_GCCOLLECT, 0);
 
 	return 0;
 }
