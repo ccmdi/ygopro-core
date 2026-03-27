@@ -277,6 +277,20 @@ int OCG_DuelBatchReplay(OCG_Duel ocg_duel, const void* const* responses,
 	}
 }
 
+int OCG_DuelSerialize(OCG_Duel ocg_duel, void** out_buffer, uint32_t* out_size) {
+	auto* pduel = static_cast<duel*>(ocg_duel);
+	return pduel->serialize(out_buffer, out_size);
+}
+
+int OCG_DuelDeserialize(OCG_Duel ocg_duel, const void* buffer, uint32_t size) {
+	auto* pduel = static_cast<duel*>(ocg_duel);
+	return pduel->deserialize(buffer, size);
+}
+
+void OCG_FreeBuffer(void* buffer) {
+	::free(buffer);
+}
+
 void* OCG_DuelQueryField(OCG_Duel ocg_duel, uint32_t* length) {
 	auto* pduel = static_cast<duel*>(ocg_duel);
 	auto& query = pduel->query_buffer;

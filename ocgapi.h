@@ -49,6 +49,11 @@ OCGAPI void OCG_DuelReset(OCG_Duel ocg_duel, const OCG_DuelOptions* options_ptr)
 OCGAPI int OCG_DuelBatchReplay(OCG_Duel ocg_duel, const void* const* responses,
                                 const uint32_t* response_lengths, uint32_t response_count);
 
+/*** SERIALIZATION ***/
+OCGAPI int OCG_DuelSerialize(OCG_Duel ocg_duel, void** out_buffer, uint32_t* out_size);
+OCGAPI int OCG_DuelDeserialize(OCG_Duel ocg_duel, const void* buffer, uint32_t size);
+OCGAPI void OCG_FreeBuffer(void* buffer);
+
 #undef OCGAPI
 #undef EXTERN_C
 

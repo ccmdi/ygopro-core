@@ -193,6 +193,32 @@ void interpreter::unregister_effect(effect* peffect) {
 void interpreter::register_group(group* pgroup) {
 	register_obj(pgroup, "Group", true);
 }
+void interpreter::orphan_group(group* pgroup) {
+	if(!pgroup)
+		return;
+	if(pgroup->weak_ref_handle) {
+		luaL_checkstack(lua_state, 3, nullptr);
+		lua_rawgeti(lua_state, LUA_REGISTRYINDEX, weak_lua_references);
+		lua_rawgeti(lua_state, -1, pgroup->weak_ref_handle);
+		lua_obj** lobj = static_cast<lua_obj**>(lua_touserdata(lua_state, -1));
+		if(lobj)
+			*lobj = &deleted;
+		lua_pop(lua_state, 1);
+		luaL_unref(lua_state, -1, pgroup->weak_ref_handle);
+		lua_pop(lua_state, 1);
+		pgroup->weak_ref_handle = 0;
+	}
+	if(pgroup->ref_handle) {
+		luaL_checkstack(lua_state, 1, nullptr);
+		lua_rawgeti(lua_state, LUA_REGISTRYINDEX, pgroup->ref_handle);
+		lua_obj** lobj = static_cast<lua_obj**>(lua_touserdata(lua_state, -1));
+		if(lobj)
+			*lobj = &deleted;
+		lua_pop(lua_state, 1);
+		luaL_unref(lua_state, LUA_REGISTRYINDEX, pgroup->ref_handle);
+		pgroup->ref_handle = 0;
+	}
+}
 void interpreter::register_obj(lua_obj* obj, const char* tablename, bool weak) {
 	if(!obj)
 		return;

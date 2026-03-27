@@ -19,6 +19,7 @@
 #include "lua_obj.h"
 #include "ocgapi_types.h"
 #include "RNG/Xoshiro256.hpp"
+#include "serialize.h"
 
 class card;
 class effect;
@@ -67,6 +68,7 @@ public:
 	std::unordered_set<card*> cards;
 	std::unordered_set<card*> assumes;
 	std::unordered_set<group*> groups;
+	std::vector<group*> orphaned_groups;
 	std::unordered_set<effect*> effects;
 	std::unordered_set<effect*> uncopy;
 
@@ -105,6 +107,13 @@ public:
 	void clear_pending_messages() { messages.clear(); }
 	void reset_for_reuse(const OCG_DuelOptions& opts);
 	const card_data& read_card(uint32_t code);
+
+	// Serialization
+	void build_id_maps(IdMaps& maps);
+	int serialize(void** out_buffer, uint32_t* out_size);
+	int deserialize(const void* buffer, uint32_t size);
+	void free_snapshot_refs();
+	RNG::Xoshiro256StarStar& rng() { return random; }
 	inline void handle_message(const char* message, OCG_LogTypes type) {
 		handle_message_callback(handle_message_payload, message, type);
 	}
@@ -113,6 +122,7 @@ public:
 	}
 private:
 	std::deque<duel_message> messages;
+	std::vector<int32_t> snapshot_lua_refs;  // cloned Lua refs from last serialize
 	RNG::Xoshiro256StarStar random;
 	OCG_DataReader read_card_callback;
 	OCG_ScriptReader read_script_callback;
