@@ -45,6 +45,9 @@ public:
 	using result_type = ResultType;
 	static constexpr ResultType min() noexcept { return ResultType(0U); }
 	static constexpr ResultType max() noexcept { return ResultType(~ResultType(0U)); }
+
+	constexpr const StateType& state() const noexcept { return s; }
+	constexpr void set_state(const StateType& st) noexcept { s = st; }
 private:
 	StateType s;
 

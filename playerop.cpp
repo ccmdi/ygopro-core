@@ -457,6 +457,11 @@ bool field::process(Processors::SelectChain& arg) {
 	auto forced = arg.forced;
 	if(arg.step == 0) {
 		returns.set<int32_t>(0, -1);
+		// EDIT: ENGINE GETS STUCK if forced with 0 chains (no valid response).
+		// Non-forced with 0 chains still sends the message so the player
+		// can decline — matches EDOPro replay expectation.
+		if(forced && core.select_chains.size() == 0)
+			return TRUE;
 		if((playerid == 1) && is_flag(DUEL_SIMPLE_AI)) {
 			if(core.select_chains.size() == 0)
 				returns.set<int32_t>(0, -1);

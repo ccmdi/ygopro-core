@@ -28,6 +28,7 @@ class owned_lua;
 class lua_obj {
 	template<typename T>
 	friend class owned_lua;
+	friend class duel;
 public:
 	duel* pduel{ nullptr };
 	int32_t ref_handle{};
