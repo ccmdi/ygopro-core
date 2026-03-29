@@ -3,11 +3,60 @@
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
 #include "serialize.h"
+#include <algorithm>
 #include "card.h"
 #include "duel.h"
 #include "effect.h"
 #include "field.h"
 #include "group.h"
+
+// Sort helpers for deterministic serialization order.
+// Unordered and pointer-keyed containers iterate in address-dependent order,
+// so we sort by stable ID fields before writing.
+
+template<typename Container>
+static std::vector<effect*> sorted_effects(const Container& c) {
+	std::vector<effect*> v(c.begin(), c.end());
+	std::sort(v.begin(), v.end(), [](effect* a, effect* b) { return a->id < b->id; });
+	return v;
+}
+
+template<typename Container>
+static std::vector<card*> sorted_cards(const Container& c) {
+	std::vector<card*> v(c.begin(), c.end());
+	std::sort(v.begin(), v.end(), [](card* a, card* b) { return a->cardid < b->cardid; });
+	return v;
+}
+
+template<typename Map>
+static std::vector<std::pair<typename Map::key_type, typename Map::mapped_type>>
+sorted_by_key(const Map& m) {
+	std::vector<std::pair<typename Map::key_type, typename Map::mapped_type>> v(m.begin(), m.end());
+	std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) { return a.first < b.first; });
+	return v;
+}
+
+// For maps keyed by effect*, sort by effect->id
+template<typename Map>
+static std::vector<std::pair<effect*, typename Map::mapped_type>>
+sorted_by_effect_key(const Map& m) {
+	std::vector<std::pair<effect*, typename Map::mapped_type>> v(m.begin(), m.end());
+	std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) {
+		return a.first->id < b.first->id;
+	});
+	return v;
+}
+
+// For maps keyed by card*, sort by card->cardid
+template<typename Map>
+static std::vector<std::pair<card*, typename Map::mapped_type>>
+sorted_by_card_key(const Map& m) {
+	std::vector<std::pair<card*, typename Map::mapped_type>> v(m.begin(), m.end());
+	std::sort(v.begin(), v.end(), [](const auto& a, const auto& b) {
+		return a.first->cardid < b.first->cardid;
+	});
+	return v;
+}
 
 // ============================================================
 // card_state
@@ -155,13 +204,16 @@ void serialize_card(SerializeBuffer& buf, card* c, const IdMaps& maps) {
 	buf.write_card_id(c->pre_overlay_target, maps);
 
 	// relation_map: unordered_map<card*, uint32_t>
-	buf.write_u32(static_cast<uint32_t>(c->relations.size()));
-	for(auto& [card_ptr, val] : c->relations) {
-		buf.write_card_id(card_ptr, maps);
-		buf.write_u32(val);
+	{
+		auto sorted = sorted_by_card_key(c->relations);
+		buf.write_u32(static_cast<uint32_t>(sorted.size()));
+		for(auto& [card_ptr, val] : sorted) {
+			buf.write_card_id(card_ptr, maps);
+			buf.write_u32(val);
+		}
 	}
 
-	// counter_map: map<uint16_t, array<uint16_t, 2>>
+	// counter_map: map<uint16_t, array<uint16_t, 2>> (ordered by key, deterministic)
 	buf.write_u32(static_cast<uint32_t>(c->counters.size()));
 	for(auto& [ctype, arr] : c->counters) {
 		buf.write_u16(ctype);
@@ -169,7 +221,7 @@ void serialize_card(SerializeBuffer& buf, card* c, const IdMaps& maps) {
 		buf.write_u16(arr[1]);
 	}
 
-	// indestructable_effects: map<uint32_t, int32_t>
+	// indestructable_effects: map<uint32_t, int32_t> (ordered by key, deterministic)
 	buf.write_u32(static_cast<uint32_t>(c->indestructable_effects.size()));
 	for(auto& [k, v] : c->indestructable_effects) {
 		buf.write_u32(k);
@@ -178,8 +230,9 @@ void serialize_card(SerializeBuffer& buf, card* c, const IdMaps& maps) {
 
 	// attacker_map: unordered_map<uint32_t, pair<card*, uint32_t>>
 	auto write_attacker_map = [&](const card::attacker_map& m) {
-		buf.write_u32(static_cast<uint32_t>(m.size()));
-		for(auto& [k, p] : m) {
+		auto sorted = sorted_by_key(m);
+		buf.write_u32(static_cast<uint32_t>(sorted.size()));
+		for(auto& [k, p] : sorted) {
 			buf.write_u32(k);
 			buf.write_card_id(p.first, maps);
 			buf.write_u32(p.second);
@@ -189,14 +242,14 @@ void serialize_card(SerializeBuffer& buf, card* c, const IdMaps& maps) {
 	write_attacker_map(c->attacked_cards);
 	write_attacker_map(c->battled_cards);
 
-	// Card sets
+	// Card sets (card_set = set<card*, card_sort>, already sorted by cardid)
 	buf.write_card_set(c->equiping_cards, maps);
 	buf.write_card_set(c->material_cards, maps);
 	buf.write_card_set(c->effect_target_owner, maps);
 	buf.write_card_set(c->effect_target_cards, maps);
 	buf.write_card_vector(c->xyz_materials, maps);
 
-	// Effect containers: multimap<uint32_t, effect*>
+	// Effect containers: multimap<uint32_t, effect*> (ordered by key, deterministic)
 	buf.write_effect_container(c->single_effect, maps);
 	buf.write_effect_container(c->field_effect, maps);
 	buf.write_effect_container(c->equip_effect, maps);
@@ -204,18 +257,26 @@ void serialize_card(SerializeBuffer& buf, card* c, const IdMaps& maps) {
 	buf.write_effect_container(c->xmaterial_effect, maps);
 
 	// effect_indexer: unordered_map<effect*, effect_container::iterator>
-	// We store as (effect_id, key) pairs -- the iterator will be rebuilt
-	buf.write_u32(static_cast<uint32_t>(c->indexer.size()));
-	for(auto& [eff, it] : c->indexer) {
-		buf.write_effect_id(eff, maps);
-		buf.write_u32(it->first);
+	{
+		auto sorted = sorted_by_effect_key(c->indexer);
+		buf.write_u32(static_cast<uint32_t>(sorted.size()));
+		for(auto& [eff, it] : sorted) {
+			buf.write_effect_id(eff, maps);
+			buf.write_u32(it->first);
+		}
 	}
 
 	// effect_relation: unordered_set<pair<effect*, uint16_t>>
-	buf.write_u32(static_cast<uint32_t>(c->relate_effect.size()));
-	for(auto& [eff, val] : c->relate_effect) {
-		buf.write_effect_id(eff, maps);
-		buf.write_u16(val);
+	{
+		std::vector<std::pair<effect*, uint16_t>> sorted(c->relate_effect.begin(), c->relate_effect.end());
+		std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+			return a.first->id < b.first->id;
+		});
+		buf.write_u32(static_cast<uint32_t>(sorted.size()));
+		for(auto& [eff, val] : sorted) {
+			buf.write_effect_id(eff, maps);
+			buf.write_u16(val);
+		}
 	}
 
 	// immune_effect: effect_set_v (vector<effect*>)
@@ -589,8 +650,9 @@ void serialize_chain(SerializeBuffer& buf, const chain& ch, const IdMaps& maps) 
 	}
 	// opmap: unordered_map<uint64_t, optarget>
 	auto write_opmap = [&](const chain::opmap& m) {
-		buf.write_u32(static_cast<uint32_t>(m.size()));
-		for(auto& [k, v] : m) {
+		auto sorted = sorted_by_key(m);
+		buf.write_u32(static_cast<uint32_t>(sorted.size()));
+		for(auto& [k, v] : sorted) {
 			buf.write_u64(k);
 			serialize_optarget(buf, v, maps);
 		}
@@ -794,24 +856,31 @@ void serialize_field_effect(SerializeBuffer& buf, const field_effect& fe, const 
 	buf.write_effect_container(fe.continuous_effect, maps);
 
 	// indexer: unordered_map<effect*, effect_container::iterator>
-	// Same approach as card indexer -- store (effect_id, key)
-	buf.write_u32(static_cast<uint32_t>(fe.indexer.size()));
-	for(auto& [eff, it] : fe.indexer) {
-		buf.write_effect_id(eff, maps);
-		buf.write_u32(it->first);
+	// Sort by effect ID for deterministic output
+	{
+		auto sorted_idx = sorted_by_effect_key(fe.indexer);
+		buf.write_u32(static_cast<uint32_t>(sorted_idx.size()));
+		for(auto& [eff, it] : sorted_idx) {
+			buf.write_effect_id(eff, maps);
+			buf.write_u32(it->first);
+		}
 	}
 
 	// oath: unordered_map<effect*, effect*>
-	buf.write_u32(static_cast<uint32_t>(fe.oath.size()));
-	for(auto& [k, v] : fe.oath) {
-		buf.write_effect_id(k, maps);
-		buf.write_effect_id(v, maps);
+	{
+		auto sorted_oath = sorted_by_effect_key(fe.oath);
+		buf.write_u32(static_cast<uint32_t>(sorted_oath.size()));
+		for(auto& [k, v] : sorted_oath) {
+			buf.write_effect_id(k, maps);
+			buf.write_effect_id(v, maps);
+		}
 	}
 
 	// effect_collections (unordered_set<effect*>)
 	auto write_eff_coll = [&](const field_effect::effect_collection& c) {
-		buf.write_u32(static_cast<uint32_t>(c.size()));
-		for(auto* e : c)
+		auto sorted = sorted_effects(c);
+		buf.write_u32(static_cast<uint32_t>(sorted.size()));
+		for(auto* e : sorted)
 			buf.write_effect_id(e, maps);
 	};
 	write_eff_coll(fe.pheff);
@@ -819,17 +888,21 @@ void serialize_field_effect(SerializeBuffer& buf, const field_effect& fe, const 
 	write_eff_coll(fe.rechargeable);
 	write_eff_coll(fe.spsummon_count_eff);
 
-	// disable_check_set: card_set
+	// disable_check_set: card_set (already sorted by card_sort)
 	buf.write_card_set(fe.disable_check_set, maps);
 
-	// grant_effect: complex container -- serialize unsorted map
-	buf.write_u32(static_cast<uint32_t>(fe.grant_effect.unsorted.size()));
-	for(auto& [eff, gains] : fe.grant_effect.unsorted) {
-		buf.write_effect_id(eff, maps);
-		buf.write_u32(static_cast<uint32_t>(gains.size()));
-		for(auto& [c, e] : gains) {
-			buf.write_card_id(c, maps);
-			buf.write_effect_id(e, maps);
+	// grant_effect: sort outer by effect ID, inner by card ID
+	{
+		auto sorted_grant = sorted_by_effect_key(fe.grant_effect.unsorted);
+		buf.write_u32(static_cast<uint32_t>(sorted_grant.size()));
+		for(auto& [eff, gains] : sorted_grant) {
+			buf.write_effect_id(eff, maps);
+			auto sorted_gains = sorted_by_card_key(gains);
+			buf.write_u32(static_cast<uint32_t>(sorted_gains.size()));
+			for(auto& [c, e] : sorted_gains) {
+				buf.write_card_id(c, maps);
+				buf.write_effect_id(e, maps);
+			}
 		}
 	}
 }
@@ -1053,11 +1126,17 @@ void serialize_processor_unit(SerializeBuffer& buf, const processor_unit& unit, 
 			buf.write_effect_id(arg.damage_change_effect, maps);
 			serialize_owned_group(buf, arg.cards_destroyed_by_battle, maps);
 			buf.write_card_id(arg.reason_card, maps);
-			// must_attack_map: multimap<effect*, card*>
-			buf.write_u32(static_cast<uint32_t>(arg.must_attack_map.size()));
-			for(auto& [e, c] : arg.must_attack_map) {
-				buf.write_effect_id(e, maps);
-				buf.write_card_id(c, maps);
+			// must_attack_map: multimap<effect*, card*> (pointer-ordered, sort by effect ID)
+			{
+				std::vector<std::pair<effect*, card*>> sorted_mam(arg.must_attack_map.begin(), arg.must_attack_map.end());
+				std::sort(sorted_mam.begin(), sorted_mam.end(), [](const auto& a, const auto& b) {
+					return a.first->id < b.first->id;
+				});
+				buf.write_u32(static_cast<uint32_t>(sorted_mam.size()));
+				for(auto& [e, c] : sorted_mam) {
+					buf.write_effect_id(e, maps);
+					buf.write_card_id(c, maps);
+				}
 			}
 		} else if constexpr(std::is_same_v<T, DamageStep>) {
 			buf.write_u16(arg.backup_phase);
@@ -2023,8 +2102,13 @@ static void deserialize_processor_list(SerializeBuffer& buf, std::list<processor
 }
 
 static void serialize_delayed_effect_collection(SerializeBuffer& buf, const processor::delayed_effect_collection& dec, const IdMaps& maps) {
-	buf.write_u32(static_cast<uint32_t>(dec.size()));
-	for(auto& [eff, ev] : dec) {
+	// std::set<pair<effect*, tevent>> is sorted by pointer address; re-sort by effect ID
+	std::vector<std::pair<effect*, tevent>> sorted(dec.begin(), dec.end());
+	std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+		return a.first->id < b.first->id;
+	});
+	buf.write_u32(static_cast<uint32_t>(sorted.size()));
+	for(auto& [eff, ev] : sorted) {
 		buf.write_effect_id(eff, maps);
 		serialize_tevent(buf, ev, maps);
 	}
@@ -2041,8 +2125,13 @@ static void deserialize_delayed_effect_collection(SerializeBuffer& buf, processo
 }
 
 static void serialize_instant_f_list(SerializeBuffer& buf, const instant_f_list& ifl, const IdMaps& maps) {
-	buf.write_u32(static_cast<uint32_t>(ifl.size()));
-	for(auto& [eff, ch] : ifl) {
+	// std::map<effect*, chain> is sorted by pointer address; re-sort by effect ID
+	std::vector<std::pair<effect*, chain>> sorted(ifl.begin(), ifl.end());
+	std::sort(sorted.begin(), sorted.end(), [](const auto& a, const auto& b) {
+		return a.first->id < b.first->id;
+	});
+	buf.write_u32(static_cast<uint32_t>(sorted.size()));
+	for(auto& [eff, ch] : sorted) {
 		buf.write_effect_id(eff, maps);
 		serialize_chain(buf, ch, maps);
 	}
@@ -2076,8 +2165,9 @@ static void deserialize_chain_limit_list(SerializeBuffer& buf, processor::chain_
 }
 
 static void serialize_action_counter(SerializeBuffer& buf, const processor::action_counter_t& ac, const IdMaps& maps) {
-	buf.write_u32(static_cast<uint32_t>(ac.size()));
-	for(auto& [k, v] : ac) {
+	auto sorted = sorted_by_key(ac);
+	buf.write_u32(static_cast<uint32_t>(sorted.size()));
+	for(auto& [k, v] : sorted) {
 		buf.write_u32(k);
 		buf.write_i32(v.check_function);
 		buf.write_u16(v.player_amount[0]);
@@ -2098,8 +2188,9 @@ static void deserialize_action_counter(SerializeBuffer& buf, processor::action_c
 }
 
 static void serialize_effect_count_map(SerializeBuffer& buf, const processor::effect_count_map& ecm) {
-	buf.write_u32(static_cast<uint32_t>(ecm.size()));
-	for(auto& [k, v] : ecm) {
+	auto sorted = sorted_by_key(ecm);
+	buf.write_u32(static_cast<uint32_t>(sorted.size()));
+	for(auto& [k, v] : sorted) {
 		buf.write_u64(k);
 		buf.write_u32(v);
 	}
@@ -2213,22 +2304,29 @@ void serialize_processor(SerializeBuffer& buf, const processor& proc, const IdMa
 	buf.write_effect_set(proc.extra_mzone_effects, maps);
 	buf.write_effect_set(proc.extra_szone_effects, maps);
 
-	// reseted_effects: set<effect*>
-	buf.write_u32(static_cast<uint32_t>(proc.reseted_effects.size()));
-	for(auto* e : proc.reseted_effects)
-		buf.write_effect_id(e, maps);
+	// reseted_effects: set<effect*> (pointer-ordered, need stable sort)
+	{
+		auto sorted = sorted_effects(proc.reseted_effects);
+		buf.write_u32(static_cast<uint32_t>(sorted.size()));
+		for(auto* e : sorted)
+			buf.write_effect_id(e, maps);
+	}
 
 	// readjust_map: unordered_map<card*, uint32_t>
-	buf.write_u32(static_cast<uint32_t>(proc.readjust_map.size()));
-	for(auto& [c, v] : proc.readjust_map) {
-		buf.write_card_id(c, maps);
-		buf.write_u32(v);
+	{
+		auto sorted = sorted_by_card_key(proc.readjust_map);
+		buf.write_u32(static_cast<uint32_t>(sorted.size()));
+		for(auto& [c, v] : sorted) {
+			buf.write_card_id(c, maps);
+			buf.write_u32(v);
+		}
 	}
 
 	// unique_cards[2]: unordered_set<card*>
 	for(int p = 0; p < 2; p++) {
-		buf.write_u32(static_cast<uint32_t>(proc.unique_cards[p].size()));
-		for(auto* c : proc.unique_cards[p])
+		auto sorted = sorted_cards(proc.unique_cards[p]);
+		buf.write_u32(static_cast<uint32_t>(sorted.size()));
+		for(auto* c : sorted)
 			buf.write_card_id(c, maps);
 	}
 
@@ -2239,15 +2337,17 @@ void serialize_processor(SerializeBuffer& buf, const processor& proc, const IdMa
 
 	// spsummon_once_map[2]: unordered_map<uint32_t, uint32_t>
 	for(int p = 0; p < 2; p++) {
-		buf.write_u32(static_cast<uint32_t>(proc.spsummon_once_map[p].size()));
-		for(auto& [k, v] : proc.spsummon_once_map[p]) {
+		auto sorted = sorted_by_key(proc.spsummon_once_map[p]);
+		buf.write_u32(static_cast<uint32_t>(sorted.size()));
+		for(auto& [k, v] : sorted) {
 			buf.write_u32(k);
 			buf.write_u32(v);
 		}
 	}
 	for(int p = 0; p < 2; p++) {
-		buf.write_u32(static_cast<uint32_t>(proc.spsummon_once_map_rst[p].size()));
-		for(auto& [k, v] : proc.spsummon_once_map_rst[p]) {
+		auto sorted = sorted_by_key(proc.spsummon_once_map_rst[p]);
+		buf.write_u32(static_cast<uint32_t>(sorted.size()));
+		for(auto& [k, v] : sorted) {
 			buf.write_u32(k);
 			buf.write_u32(v);
 		}

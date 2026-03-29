@@ -4,12 +4,14 @@
  *
  * SPDX-License-Identifier: AGPL-3.0-or-later
  */
+#include <algorithm>
 #include <array>
 #include <cstring> //std::memcpy
 #include "card.h"
 #include "duel.h"
 #include "effect.h"
 #include "field.h"
+#include "group.h"
 #include "interpreter.h"
 
 duel::duel(const OCG_DuelOptions& options, bool& valid_lua_lib) :
@@ -207,8 +209,25 @@ void duel::build_id_maps(IdMaps& maps) {
 		maps.effect_to_id[e] = e->id;
 		maps.id_to_effect[e->id] = e;
 	}
+	// Sort groups by stable key (first card's cardid, then size) so that
+	// sequential group IDs are deterministic across identical game states.
+	std::vector<group*> sorted_groups(groups.begin(), groups.end());
+	std::sort(sorted_groups.begin(), sorted_groups.end(), [](group* a, group* b) {
+		uint32_t a_first = a->container.empty() ? 0 : (*a->container.begin())->cardid;
+		uint32_t b_first = b->container.empty() ? 0 : (*b->container.begin())->cardid;
+		if(a_first != b_first) return a_first < b_first;
+		if(a->container.size() != b->container.size())
+			return a->container.size() < b->container.size();
+		// Tiebreak: compare full card sets lexicographically by cardid
+		auto ai = a->container.begin(), bi = b->container.begin();
+		for(; ai != a->container.end(); ++ai, ++bi) {
+			if((*ai)->cardid != (*bi)->cardid)
+				return (*ai)->cardid < (*bi)->cardid;
+		}
+		return a->is_readonly < b->is_readonly;
+	});
 	uint32_t gid = 1;
-	for(auto* g : groups) {
+	for(auto* g : sorted_groups) {
 		maps.group_to_id[g] = gid;
 		maps.id_to_group[gid] = g;
 		gid++;
@@ -231,6 +250,28 @@ int duel::serialize(void** out_buffer, uint32_t* out_size) {
 	build_id_maps(maps);
 	SerializeBuffer buf;
 
+	// Sort all unordered containers by stable keys for deterministic output.
+	std::vector<card*> sorted_cards(cards.begin(), cards.end());
+	std::sort(sorted_cards.begin(), sorted_cards.end(),
+		[](card* a, card* b) { return a->cardid < b->cardid; });
+
+	std::vector<effect*> sorted_effects(effects.begin(), effects.end());
+	std::sort(sorted_effects.begin(), sorted_effects.end(),
+		[](effect* a, effect* b) { return a->id < b->id; });
+
+	// Groups: sort by assigned (deterministic) group ID from build_id_maps
+	std::vector<group*> sorted_groups(groups.begin(), groups.end());
+	std::sort(sorted_groups.begin(), sorted_groups.end(),
+		[&maps](group* a, group* b) { return maps.group_to_id[a] < maps.group_to_id[b]; });
+
+	std::vector<effect*> sorted_uncopy(uncopy.begin(), uncopy.end());
+	std::sort(sorted_uncopy.begin(), sorted_uncopy.end(),
+		[](effect* a, effect* b) { return a->id < b->id; });
+
+	std::vector<card*> sorted_assumes(assumes.begin(), assumes.end());
+	std::sort(sorted_assumes.begin(), sorted_assumes.end(),
+		[](card* a, card* b) { return a->cardid < b->cardid; });
+
 	// Magic + version
 	buf.write_u32(0x59474F53); // "YGOS"
 	buf.write_u32(2);          // version 2: manifest + cloned refs
@@ -251,28 +292,28 @@ int duel::serialize(void** out_buffer, uint32_t* out_size) {
 
 	// === Manifests (ID lists for reconciliation) ===
 	// Card manifest
-	buf.write_u32(static_cast<uint32_t>(cards.size()));
-	for(auto* c : cards)
+	buf.write_u32(static_cast<uint32_t>(sorted_cards.size()));
+	for(auto* c : sorted_cards)
 		buf.write_u32(c->cardid);
 	// Effect manifest
-	buf.write_u32(static_cast<uint32_t>(effects.size()));
-	for(auto* e : effects)
+	buf.write_u32(static_cast<uint32_t>(sorted_effects.size()));
+	for(auto* e : sorted_effects)
 		buf.write_u32(e->id);
 	// Group manifest
-	buf.write_u32(static_cast<uint32_t>(groups.size()));
-	for(auto* g : groups)
+	buf.write_u32(static_cast<uint32_t>(sorted_groups.size()));
+	for(auto* g : sorted_groups)
 		buf.write_u32(maps.group_to_id[g]);
 
 	// === Object data ===
 
 	// Cards
-	buf.write_u32(static_cast<uint32_t>(cards.size()));
-	for(auto* c : cards)
+	buf.write_u32(static_cast<uint32_t>(sorted_cards.size()));
+	for(auto* c : sorted_cards)
 		serialize_card(buf, c, maps);
 
 	// Effects -- clone Lua refs so they survive if originals are freed
-	buf.write_u32(static_cast<uint32_t>(effects.size()));
-	for(auto* e : effects) {
+	buf.write_u32(static_cast<uint32_t>(sorted_effects.size()));
+	for(auto* e : sorted_effects) {
 		serialize_effect(buf, e, maps);
 		// Clone the 5 Lua function refs and write them
 		bool val_is_ref = e->is_flag(EFFECT_FLAG_FUNC_VALUE);
@@ -292,18 +333,18 @@ int duel::serialize(void** out_buffer, uint32_t* out_size) {
 	}
 
 	// Uncopy effects (just IDs)
-	buf.write_u32(static_cast<uint32_t>(uncopy.size()));
-	for(auto* e : uncopy)
+	buf.write_u32(static_cast<uint32_t>(sorted_uncopy.size()));
+	for(auto* e : sorted_uncopy)
 		buf.write_effect_id(e, maps);
 
 	// Assumes (just card IDs)
-	buf.write_u32(static_cast<uint32_t>(assumes.size()));
-	for(auto* c : assumes)
+	buf.write_u32(static_cast<uint32_t>(sorted_assumes.size()));
+	for(auto* c : sorted_assumes)
 		buf.write_card_id(c, maps);
 
 	// Groups
-	buf.write_u32(static_cast<uint32_t>(groups.size()));
-	for(auto* g : groups) {
+	buf.write_u32(static_cast<uint32_t>(sorted_groups.size()));
+	for(auto* g : sorted_groups) {
 		buf.write_u32(maps.group_to_id[g]);
 		buf.write_card_set(g->container, maps);
 		buf.write_bool(g->is_readonly);
